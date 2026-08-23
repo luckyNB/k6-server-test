@@ -1,0 +1,18 @@
+{
+  "name": "k6-serverest",
+  "version": "1.0.0",
+  "description": "k6 serverest study project",
+  "main": "index.js",
+  "author": "Samuel Andrade",
+  "license": "ISC",
+  "devDependencies": {
+    "patch-package": "^8.0.1",
+    "serverest": "^2.29.5"
+  },
+  "scripts": {
+    "start:server": "NODE_OPTIONS='--no-deprecation' npx serverest --nodoc",
+    "clean": "rm -rf reports/*",
+    "test:load": "npm run clean && k6 run --out json=reports/test-results.json tests/e2e-load-test.js",
+    "postinstall": "patch-package"
+  }
+}
