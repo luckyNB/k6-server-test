@@ -1,49 +1,165 @@
 name: K6 Performance Tests
 
+# ==========================================================
+# Workflow runs ONLY when manually triggered
+# GitHub Actions → K6 Performance Tests → Run workflow
+# ==========================================================
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch: #
-jobs:
-  performance-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
+  workflow_dispatch:
 
+permissions:
+  contents: write
+
+jobs:
+
+  performance-test:
+
+    name: K6 Performance Tests
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 30
+
+    steps:
+
+      # ==========================================================
+      # 1. Checkout repository
+      # ==========================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # 2. Setup Node.js
+      # ==========================================================
       - name: Setup Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
 
+      # ==========================================================
+      # 3. Install k6
+      # ==========================================================
       - name: Install k6
         run: |
-            sudo apt-get update && sudo apt-get install ca-certificates -y
-            sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-            echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-            sudo apt-get update && sudo apt-get install k6
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates gnupg
 
+          curl -fsSL https://dl.k6.io/key.gpg | \
+            sudo gpg --dearmor \
+            -o /usr/share/keyrings/k6-archive-keyring.gpg
+
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | \
+            sudo tee /etc/apt/sources.list.d/k6.list
+
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+          echo "Installed k6 version:"
+          k6 version
+
+      # ==========================================================
+      # 4. Install Node dependencies
+      # ==========================================================
       - name: Install dependencies
         run: npm ci
 
+      # ==========================================================
+      # 5. Start application/server
+      # ==========================================================
       - name: Start server
         run: |
-            npm run start:server &
-            sleep 5
+          npm run start:server > server.log 2>&1 &
+          echo $! > server.pid
 
+          echo "Waiting for server to start..."
+          sleep 5
+
+          echo "Server started."
+
+      # ==========================================================
+      # 6. Run K6 load tests
+      # ==========================================================
       - name: Run load tests
-        run: npm run test:load
+        id: k6_tests
+        continue-on-error: true
+        run: |
+          echo "======================================"
+          echo "Starting K6 Performance Tests"
+          echo "======================================"
 
-      - name: Upload artifacts
+          mkdir -p reports
+
+          npm run test:load
+
+          TEST_EXIT_CODE=$?
+
+          echo "K6_TEST_EXIT_CODE=$TEST_EXIT_CODE" >> "$GITHUB_ENV"
+
+          exit $TEST_EXIT_CODE
+
+      # ==========================================================
+      # 7. Collect server logs
+      # ==========================================================
+      - name: Collect server logs
+        if: always()
+        run: |
+          echo "Collecting server logs..."
+
+          if [ -f server.log ]; then
+            cp server.log reports/server.log
+          fi
+
+      # ==========================================================
+      # 8. Upload K6 reports
+      # ==========================================================
+      - name: Upload performance test reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reports
-          path: ./reports
+          name: k6-performance-reports
+          path: |
+            ./reports
+            ./server.log
+          retention-days: 14
+          if-no-files-found: warn
 
+      # ==========================================================
+      # 9. Publish reports to GitHub Pages
+      # ==========================================================
       - name: Publish test report
-        uses: peaceiris/actions-gh-pages@v3
+        if: always()
+        uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./reports
           publish_branch: gh-pages
+
+      # ==========================================================
+      # 10. Final test status
+      # ==========================================================
+      - name: Set final K6 test status
+        if: always()
+        run: |
+
+          echo "======================================"
+          echo "Final K6 Test Status"
+          echo "======================================"
+
+          echo "K6_TEST_EXIT_CODE=${K6_TEST_EXIT_CODE:-unknown}"
+
+          if [ "${K6_TEST_EXIT_CODE:-1}" != "0" ]; then
+
+            echo ""
+            echo "❌ K6 performance tests failed."
+            echo "Reports and logs have already been uploaded."
+            echo ""
+
+            exit 1
+
+          else
+
+            echo ""
+            echo "✅ K6 performance tests passed successfully."
+            echo ""
+
+          fi
